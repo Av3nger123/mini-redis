@@ -22,6 +22,12 @@ type Cache struct {
 	cleanup     time.Duration
 	stopCleanup chan int
 	file        string
+	subscribers map[string][]*Subscriber
+}
+
+type Subscriber struct {
+	connection net.Conn
+	ch         chan string
 }
 
 func NewCache(filepath string, expiry time.Duration) (*Cache, error) {
@@ -30,6 +36,7 @@ func NewCache(filepath string, expiry time.Duration) (*Cache, error) {
 		file:        filepath,
 		stopCleanup: make(chan int),
 		cleanup:     expiry,
+		subscribers: make(map[string][]*Subscriber),
 	}
 	err := cache.loadFromDisk()
 	if err != nil {
@@ -144,7 +151,7 @@ func (cache *Cache) HandleConnection(connection net.Conn) {
 			}
 			fmt.Println("Error reading command:", err)
 		}
-		response := cache.handleCommand(command)
+		response := cache.handleCommand(command, connection)
 		bytesWritten, err := writer.WriteString(response + "\n")
 		if err != nil {
 			fmt.Println("Error writing response:", err)
@@ -156,7 +163,7 @@ func (cache *Cache) HandleConnection(connection net.Conn) {
 	}
 }
 
-func (cache *Cache) handleCommand(command string) string {
+func (cache *Cache) handleCommand(command string, connection net.Conn) string {
 	parts := strings.Split(strings.TrimSpace(command), " ")
 	if len(parts) < 2 {
 		return "Invalid command"
@@ -170,6 +177,10 @@ func (cache *Cache) handleCommand(command string) string {
 		return cache.put(parts)
 	case "DELETE":
 		return cache.delete(parts[1])
+	case "SUBSCRIBE":
+		return cache.subscribe(parts[1], connection)
+	case "SEND":
+		return cache.publish(parts)
 	}
 	// TODO: Handle commands like a cache
 	return command
@@ -225,5 +236,34 @@ func (cache *Cache) delete(key string) string {
 
 	delete(cache.data, key)
 	return "Record removed"
+}
 
+func (cache *Cache) subscribe(topic string, connection net.Conn) string {
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+	subscription := &Subscriber{connection: connection, ch: make(chan string, 10)}
+	cache.subscribers[topic] = append(cache.subscribers[topic], subscription)
+	go listenEvents(subscription)
+	return "Subscribed to channel " + topic
+}
+
+func listenEvents(subscription *Subscriber) {
+	for {
+		message := <-subscription.ch
+		writer := bufio.NewWriter(subscription.connection)
+		writer.WriteString(message)
+		writer.Flush()
+	}
+}
+
+func (cache *Cache) publish(command []string) string {
+	cache.mutex.RLock()
+	defer cache.mutex.RUnlock()
+
+	topic := command[1]
+	message := command[2]
+	for _, subscriber := range cache.subscribers[topic] {
+		subscriber.ch <- message
+	}
+	return "Published to the channel: " + topic
 }
