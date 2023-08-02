@@ -21,6 +21,7 @@ func main() {
 	}
 
 	defer listener.Close()
+	defer cache.StopClearingRecords()
 
 	fmt.Println("Cache server listening on :6379")
 

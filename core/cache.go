@@ -40,6 +40,10 @@ func NewCache(filepath string, expiry time.Duration) (*Cache, error) {
 	return cache, nil
 }
 
+func (cache *Cache) StopClearingRecords() {
+	cache.stopCleanup <- 1
+}
+
 // Clearing expired records form cache
 func (cache *Cache) clear() {
 	ticker := time.NewTicker(cache.cleanup)
