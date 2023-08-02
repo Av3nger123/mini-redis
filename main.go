@@ -1,57 +1,20 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"net"
+	"time"
+
+	"github.com/Av3nger123/mini-redis/core"
 )
-
-type Cache struct {
-	data map[string]string
-}
-
-func NewCache() *Cache {
-	return &Cache{
-		data: make(map[string]string),
-	}
-}
-
-func (cache *Cache) handleConnection(connection net.Conn) {
-	defer connection.Close()
-
-	reader := bufio.NewReader(connection)
-	writer := bufio.NewWriter(connection)
-
-	for {
-		command, err := reader.ReadString('\n')
-		if err != nil {
-			if err.Error() == "EOF" {
-				fmt.Println("Client closed the connection.")
-				break
-			}
-			fmt.Println("Error reading command:", err)
-		}
-		response := cache.handleCommand(command)
-		bytesWritten, err := writer.WriteString(response + "\n")
-		if err != nil {
-			fmt.Println("Error writing response:", err)
-		}
-		fmt.Println(bytesWritten)
-
-		writer.Flush()
-
-	}
-}
-
-func (cache *Cache) handleCommand(command string) string {
-
-	// TODO: Handle commands like a cache
-	return command
-}
 
 func main() {
 
-	cache := NewCache()
+	cache, err := core.NewCache("cache.txt", 5*time.Minute)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
 	listener, err := net.Listen("tcp", ":6379")
 	if err != nil {
 		panic(err)
@@ -69,7 +32,7 @@ func main() {
 		}
 		fmt.Println("New connection:", connection)
 
-		go cache.handleConnection(connection)
+		go cache.HandleConnection(connection)
 	}
 
 }
