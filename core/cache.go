@@ -16,12 +16,18 @@ type CacheRecord struct {
 	expiry time.Time
 }
 
+type Connection struct {
+	Connection net.Conn
+	Channel    chan string
+}
+
 type Cache struct {
 	data        map[string]*CacheRecord
 	mutex       sync.RWMutex
 	cleanup     time.Duration
 	stopCleanup chan int
 	file        string
+	subscribers map[string][]chan string
 }
 
 func NewCache(filepath string, expiry time.Duration) (*Cache, error) {
@@ -30,6 +36,7 @@ func NewCache(filepath string, expiry time.Duration) (*Cache, error) {
 		file:        filepath,
 		stopCleanup: make(chan int),
 		cleanup:     expiry,
+		subscribers: make(map[string][]chan string),
 	}
 	err := cache.loadFromDisk()
 	if err != nil {
@@ -38,6 +45,13 @@ func NewCache(filepath string, expiry time.Duration) (*Cache, error) {
 	go cache.persist()
 	go cache.clear()
 	return cache, nil
+}
+
+func NewConnection(conn net.Conn) Connection {
+	return Connection{
+		Connection: conn,
+		Channel:    make(chan string),
+	}
 }
 
 func (cache *Cache) StopClearingRecords() {
@@ -87,7 +101,7 @@ func (cache *Cache) loadToDisk() error {
 	}
 	writer := bufio.NewWriter(file)
 	for key, value := range cache.data {
-		line := fmt.Sprintf("%v:%v:%v\n", key, value.value, value.expiry.Format(time.RFC3339))
+		line := fmt.Sprintf("%v~%v~%v\n", key, value.value, value.expiry.Format(time.RFC3339))
 		_, err := writer.WriteString(line)
 		if err != nil {
 			return err
@@ -112,7 +126,7 @@ func (cache *Cache) loadFromDisk() error {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
-		parts := strings.Split(line, ":")
+		parts := strings.Split(line, "~")
 		expiry, err := time.Parse(time.RFC3339, parts[2])
 		if err != nil {
 			fmt.Println("Error in converting string to time.Time for key", parts[0])
@@ -129,11 +143,11 @@ func (cache *Cache) loadFromDisk() error {
 	return nil
 }
 
-func (cache *Cache) HandleConnection(connection net.Conn) {
-	defer connection.Close()
+func (cache *Cache) HandleConnection(conn Connection) {
+	defer conn.Connection.Close()
 
-	reader := bufio.NewReader(connection)
-	writer := bufio.NewWriter(connection)
+	reader := bufio.NewReader(conn.Connection)
+	writer := bufio.NewWriter(conn.Connection)
 
 	for {
 		command, err := reader.ReadString('\n')
@@ -144,7 +158,7 @@ func (cache *Cache) HandleConnection(connection net.Conn) {
 			}
 			fmt.Println("Error reading command:", err)
 		}
-		response := cache.handleCommand(command, connection)
+		response := cache.handleCommand(command, conn)
 		bytesWritten, err := writer.WriteString(response + "\n")
 		if err != nil {
 			fmt.Println("Error writing response:", err)
@@ -156,7 +170,7 @@ func (cache *Cache) HandleConnection(connection net.Conn) {
 	}
 }
 
-func (cache *Cache) handleCommand(command string, connection net.Conn) string {
+func (cache *Cache) handleCommand(command string, connection Connection) string {
 	parts := strings.Split(strings.TrimSpace(command), " ")
 	if len(parts) < 2 {
 		return "Invalid command"
@@ -170,6 +184,10 @@ func (cache *Cache) handleCommand(command string, connection net.Conn) string {
 		return cache.put(parts)
 	case "DELETE":
 		return cache.delete(parts[1])
+	case "SUBSCRIBE":
+		return cache.subscribe(parts[1], connection)
+	case "SEND":
+		return cache.publish(parts)
 	default:
 		return "Invalid Command"
 
@@ -226,4 +244,23 @@ func (cache *Cache) delete(key string) string {
 
 	delete(cache.data, key)
 	return "Record removed"
+}
+
+func (cache *Cache) subscribe(topic string, connection Connection) string {
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+	cache.subscribers[topic] = append(cache.subscribers[topic], connection.Channel)
+	return "Subscribed to channel " + topic
+}
+
+func (cache *Cache) publish(command []string) string {
+	cache.mutex.RLock()
+	defer cache.mutex.RUnlock()
+
+	topic := command[1]
+	message := command[2]
+	for _, channel := range cache.subscribers[topic] {
+		channel <- message
+	}
+	return "Published to the channel: " + topic
 }
