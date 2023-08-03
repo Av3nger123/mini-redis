@@ -8,6 +8,7 @@ Features:
  - Basic functionality set and get
  - TTL 
  - persistance (saves to the disk for every x seconds)
+ - pub/sub 
 
 Running the code
 ```sh
